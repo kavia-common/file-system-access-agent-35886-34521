@@ -9,7 +9,9 @@ from .views import (
     copy,
     move,
     rename,
-    search
+    search,
+    mcp_tools,
+    mcp_call,
 )
 
 urlpatterns = [
@@ -23,4 +25,6 @@ urlpatterns = [
     path('fs/move/', move, name='move'),
     path('fs/rename/', rename, name='rename'),
     path('fs/search/', search, name='search'),
+    path('mcp/tools/', mcp_tools, name='mcp_tools'),
+    path('mcp/call/', mcp_call, name='mcp_call'),
 ]

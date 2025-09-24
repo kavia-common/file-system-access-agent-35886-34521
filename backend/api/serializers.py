@@ -66,3 +66,16 @@ class SearchQuerySerializer(serializers.Serializer):
     path = serializers.CharField(help_text="Root directory to search.")
     pattern = serializers.CharField(help_text="Glob-like pattern, e.g., **/*.py")
     include_hidden = serializers.BooleanField(required=False, default=False, help_text="Include hidden files when true.")
+
+
+class MCPToolCallSerializer(serializers.Serializer):
+    """Serializer for MCP tool call."""
+    tool_name = serializers.CharField(help_text="The MCP tool name to call, e.g., fs.read")
+    arguments = serializers.DictField(child=serializers.JSONField(), help_text="Arguments for the tool call")
+
+
+class MCPResponseSerializer(serializers.Serializer):
+    """Serializer for MCP response envelope."""
+    success = serializers.BooleanField()
+    data = serializers.DictField(required=False)
+    error = serializers.CharField(required=False)

@@ -16,7 +16,8 @@ from .serializers import (
     RemoveSerializer,
     MoveCopySerializer,
     RenameSerializer,
-    SearchQuerySerializer
+    SearchQuerySerializer,
+    MCPToolCallSerializer,
 )
 from .fs_utils import (
     resolve_safe_path,
@@ -25,15 +26,20 @@ from .fs_utils import (
     copy_or_move,
     ensure_parent_dir
 )
+from .mcp import MCPClient, MCPToolCall
 
-# Default base directory for file operations
+# Default base directory for file operations: restrict to repository root by default
 BASE_DIR = Path(settings.BASE_DIR).parent
+
 
 # PUBLIC_INTERFACE
 @api_view(['GET'])
 def health(request):
-    """Health check endpoint."""
-    return Response({"message": "Server is up!"})
+    """Health check endpoint.
+    Returns a simple message and a hint about the base directory restriction.
+    """
+    return Response({"message": "Server is up!", "base_dir": str(BASE_DIR)})
+
 
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
@@ -46,14 +52,14 @@ def health(request):
 @api_view(['GET'])
 def list_directory(request):
     """List contents of a directory.
-    
+
     Returns file and directory information for the specified path.
     Supports recursive listing and hidden file inclusion options.
     """
     serializer = ListDirQuerySerializer(data=request.query_params)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         path = resolve_safe_path(BASE_DIR, serializer.validated_data['path'])
         if not path.exists():
@@ -79,23 +85,25 @@ def list_directory(request):
                     if not include_hidden and name.startswith('.'):
                         continue
                     rel_path = item_path.relative_to(path)
+                    st = item_path.stat()
                     contents.append({
                         "name": name,
                         "path": str(rel_path),
                         "type": "directory" if item_path.is_dir() else "file",
-                        "size": item_path.stat().st_size if item_path.is_file() else None,
-                        "modified": item_path.stat().st_mtime
+                        "size": st.st_size if item_path.is_file() else None,
+                        "modified": st.st_mtime
                     })
         else:
             for item in path.iterdir():
                 if not include_hidden and item.name.startswith('.'):
                     continue
+                st = item.stat()
                 contents.append({
                     "name": item.name,
                     "path": item.name,
                     "type": "directory" if item.is_dir() else "file",
-                    "size": item.stat().st_size if item.is_file() else None,
-                    "modified": item.stat().st_mtime
+                    "size": st.st_size if item.is_file() else None,
+                    "modified": st.st_mtime
                 })
 
         return Response(contents)
@@ -111,6 +119,7 @@ def list_directory(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='get',
@@ -122,13 +131,13 @@ def list_directory(request):
 @api_view(['GET'])
 def read_file(request):
     """Read contents of a file.
-    
+
     Supports range-based reading and various encodings.
     """
     serializer = ReadFileQuerySerializer(data=request.query_params)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         path = resolve_safe_path(BASE_DIR, serializer.validated_data['path'])
         if not path.exists():
@@ -169,6 +178,7 @@ def read_file(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='post',
@@ -180,13 +190,13 @@ def read_file(request):
 @api_view(['POST'])
 def write_file(request):
     """Write content to a file.
-    
+
     Supports various encodings and append mode.
     """
     serializer = WriteFileSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         path = resolve_safe_path(BASE_DIR, serializer.validated_data['path'])
         content = serializer.validated_data['content']
@@ -195,7 +205,7 @@ def write_file(request):
 
         ensure_parent_dir(path)
         mode = 'ab' if append else 'wb'
-        
+
         data = decode_content(content, encoding)
         with open(path, mode) as f:
             f.write(data)
@@ -216,6 +226,7 @@ def write_file(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='post',
@@ -227,13 +238,13 @@ def write_file(request):
 @api_view(['POST'])
 def make_directory(request):
     """Create a new directory.
-    
+
     Supports creating parent directories and handling existing directories.
     """
     serializer = MkdirSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         path = resolve_safe_path(BASE_DIR, serializer.validated_data['path'])
         parents = serializer.validated_data.get('parents', True)
@@ -258,6 +269,7 @@ def make_directory(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='post',
@@ -269,13 +281,13 @@ def make_directory(request):
 @api_view(['POST'])
 def remove(request):
     """Remove a file or directory.
-    
+
     Supports recursive deletion and force options.
     """
     serializer = RemoveSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         path = resolve_safe_path(BASE_DIR, serializer.validated_data['path'])
         recursive = serializer.validated_data.get('recursive', False)
@@ -308,6 +320,7 @@ def remove(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='post',
@@ -319,13 +332,13 @@ def remove(request):
 @api_view(['POST'])
 def copy(request):
     """Copy a file or directory.
-    
+
     Supports overwrite option.
     """
     serializer = MoveCopySerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         src = resolve_safe_path(BASE_DIR, serializer.validated_data['src'])
         dst = resolve_safe_path(BASE_DIR, serializer.validated_data['dst'])
@@ -360,6 +373,7 @@ def copy(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='post',
@@ -371,13 +385,13 @@ def copy(request):
 @api_view(['POST'])
 def move(request):
     """Move a file or directory.
-    
+
     Supports overwrite option.
     """
     serializer = MoveCopySerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         src = resolve_safe_path(BASE_DIR, serializer.validated_data['src'])
         dst = resolve_safe_path(BASE_DIR, serializer.validated_data['dst'])
@@ -412,6 +426,7 @@ def move(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='post',
@@ -423,13 +438,13 @@ def move(request):
 @api_view(['POST'])
 def rename(request):
     """Rename a file or directory.
-    
+
     Supports overwrite option.
     """
     serializer = RenameSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         path = resolve_safe_path(BASE_DIR, serializer.validated_data['path'])
         new_name = serializer.validated_data['new_name']
@@ -443,7 +458,7 @@ def rename(request):
 
         new_path = path.parent / new_name
         new_path = resolve_safe_path(BASE_DIR, str(new_path))
-        
+
         _, overwritten = copy_or_move(path, new_path, True, overwrite)
         return Response({
             "message": "Item renamed successfully",
@@ -467,6 +482,7 @@ def rename(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
 # PUBLIC_INTERFACE
 @swagger_auto_schema(
     method='get',
@@ -478,13 +494,13 @@ def rename(request):
 @api_view(['GET'])
 def search(request):
     """Search for files using glob pattern.
-    
+
     Supports glob patterns and hidden file inclusion option.
     """
     serializer = SearchQuerySerializer(data=request.query_params)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         root = resolve_safe_path(BASE_DIR, serializer.validated_data['path'])
         pattern = serializer.validated_data['pattern']
@@ -500,13 +516,14 @@ def search(request):
         for path in root.glob(pattern):
             if not include_hidden and any(part.startswith('.') for part in path.parts):
                 continue
-            
+
+            st = path.stat()
             matches.append({
                 "name": path.name,
                 "path": str(path.relative_to(root)),
                 "type": "directory" if path.is_dir() else "file",
-                "size": path.stat().st_size if path.is_file() else None,
-                "modified": path.stat().st_mtime
+                "size": st.st_size if path.is_file() else None,
+                "modified": st.st_mtime
             })
 
         return Response(matches)
@@ -521,3 +538,48 @@ def search(request):
             {"error": f"Failed to search: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+# PUBLIC_INTERFACE
+@swagger_auto_schema(
+    method='get',
+    operation_description="List available MCP tools from the MCP server",
+    responses={200: "List of tools"},
+    tags=['mcp']
+)
+@api_view(['GET'])
+def mcp_tools(request):
+    """List available MCP tools from the configured MCP server."""
+    client = MCPClient()
+    resp = client.list_tools()
+    status_code = status.HTTP_200_OK if resp.success else status.HTTP_502_BAD_GATEWAY
+    return Response({"success": resp.success, "data": resp.data, "error": resp.error}, status=status_code)
+
+
+# PUBLIC_INTERFACE
+@swagger_auto_schema(
+    method='post',
+    operation_description="Invoke an MCP tool by name with arguments",
+    request_body=MCPToolCallSerializer,
+    responses={200: "MCP tool execution result"},
+    tags=['mcp']
+)
+@api_view(['POST'])
+def mcp_call(request):
+    """Invoke an MCP tool by name with arguments.
+
+    This endpoint proxies a tool call to the MCP server. Implementation here is stubbed
+    and should be replaced with a real MCP client when available.
+    """
+    serializer = MCPToolCallSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    client = MCPClient()
+    call = MCPToolCall(
+        tool_name=serializer.validated_data["tool_name"],
+        arguments=serializer.validated_data.get("arguments", {}),
+    )
+    resp = client.call_tool(call)
+    status_code = status.HTTP_200_OK if resp.success else status.HTTP_502_BAD_GATEWAY
+    return Response({"success": resp.success, "data": resp.data, "error": resp.error}, status=status_code)
